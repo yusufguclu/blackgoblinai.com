@@ -1,4 +1,5 @@
 import Link from "next/link";
+import CreditBalance from "@/components/CreditBalance";
 
 export default function HomePage() {
   return (
@@ -44,6 +45,9 @@ export default function HomePage() {
             </p>
             <div className="mt-2 text-[8px] text-center opacity-70">*FEES ACTUALLY 100%</div>
           </div>
+
+          {/* Credit Balance Widget */}
+          <CreditBalance />
         </aside>
 
         {/* Main Content Area */}

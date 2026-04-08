@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
+import Link from "next/link";
 import ImageUpload from "@/components/ImageUpload";
 import type { ApiGenerateResponse, ApiStatusResponse } from "@/types";
 
@@ -49,12 +50,24 @@ export default function CreateSlugPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [noCredits, setNoCredits] = useState(false);
+  const [creditsRemaining, setCreditsRemaining] = useState<number | null>(null);
   const [progressMessage, setProgressMessage] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const abortRef = useRef(false);
+
+  // Fetch credit balance on mount
+  useEffect(() => {
+    fetch("/api/credits/balance")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) setCreditsRemaining(data.credits);
+      })
+      .catch(() => {});
+  }, []);
 
   // Clean up intervals on unmount
   useEffect(() => {
@@ -109,6 +122,7 @@ export default function CreateSlugPage() {
 
     setIsGenerating(true);
     setGenerateError(null);
+    setNoCredits(false);
     setElapsedSeconds(0);
     setProgressMessage(PROGRESS_MESSAGES[0]);
     abortRef.current = false;
@@ -131,13 +145,21 @@ export default function CreateSlugPage() {
         body: formData,
       });
 
-      const data: ApiGenerateResponse = await response.json();
+      const data = await response.json();
 
       if (!data.success || !data.taskId) {
+        if (data.code === "NO_CREDITS") {
+          setNoCredits(true);
+        }
         setGenerateError(data.error ?? "Failed to start generation.");
         setIsGenerating(false);
         stopPolling();
         return;
+      }
+
+      // Update credits display after successful deduction
+      if (typeof data.creditsRemaining === "number") {
+        setCreditsRemaining(data.creditsRemaining);
       }
 
       // Step 2: Poll for status
@@ -285,14 +307,25 @@ export default function CreateSlugPage() {
             </div>
             
             {generateError && (
-              <div className="bg-error text-white font-bold px-4 py-2 border-2 border-black uppercase text-sm flex flex-col sm:flex-row items-center gap-3 w-full justify-center">
-                <span>Error: {generateError}</span>
-                <button
-                  onClick={handleRetry}
-                  className="bg-white text-error font-black text-xs px-4 py-1 border-2 border-black hover:bg-[#FFFF00] hover:text-black transition-colors uppercase shrink-0"
-                >
-                  RETRY
-                </button>
+              <div className={`font-bold px-4 py-3 border-2 border-black uppercase text-sm flex flex-col items-center gap-3 w-full justify-center ${
+                noCredits ? "bg-[#FFFF00] text-black" : "bg-error text-white"
+              }`}>
+                <span>{noCredits ? "⚠ " : "Error: "}{generateError}</span>
+                {noCredits ? (
+                  <Link
+                    href="/credits"
+                    className="bg-primary text-white font-black text-sm px-6 py-2 border-2 border-black hover:scale-105 transition-transform uppercase"
+                  >
+                    BUY CREDITS NOW →
+                  </Link>
+                ) : (
+                  <button
+                    onClick={handleRetry}
+                    className="bg-white text-error font-black text-xs px-4 py-1 border-2 border-black hover:bg-[#FFFF00] hover:text-black transition-colors uppercase shrink-0"
+                  >
+                    RETRY
+                  </button>
+                )}
               </div>
             )}
 
@@ -346,6 +379,11 @@ export default function CreateSlugPage() {
               ? `Processing... ${formatTime(elapsedSeconds)}`
               : "Ready"}
           </span>
+          {creditsRemaining !== null && (
+            <span className={creditsRemaining <= 3 ? "text-secondary" : ""}>
+              Credits: {creditsRemaining}
+            </span>
+          )}
           <span>Memelord AI v4.2.0</span>
         </div>
       </div>

@@ -50,6 +50,14 @@ export default function Header() {
         ) : user ? (
           // ── Authenticated ──
           <div className="flex gap-1 md:gap-2 items-center">
+            <Link
+              href="/credits"
+              className="flex items-center gap-1 bg-[#FFFF00] text-black font-headline font-bold text-xs px-2 py-1 md:px-3 md:py-1.5 border-2 border-black hover:scale-105 transition-transform shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-x-0.5 active:translate-y-0.5 uppercase"
+              title="Your credits"
+            >
+              <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>toll</span>
+              <span className="hidden sm:inline">CREDITS</span>
+            </Link>
             <span className="hidden sm:block font-headline font-black text-[#FFFF00] text-xs md:text-sm uppercase truncate max-w-[120px]">
               {displayName}
             </span>

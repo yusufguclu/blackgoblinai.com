@@ -5,6 +5,10 @@
  *   1. Image-to-image: FormData with `image` file + `styleSlug`
  *   2. Text-to-image:  FormData with `prompt` + optional `aspectRatio`, `resolution`
  *
+ * Credit system:
+ *   - Checks user has >= 1 credit before generating
+ *   - Deducts 1 credit when generation task starts successfully
+ *
  * Returns { success, taskId } for async polling, OR { success, imageUrl } if waited.
  * The `mode` field in the request determines the flow ("sync" waits, default is "async").
  */
@@ -12,6 +16,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateImage } from "@/lib/image";
 import { getStyleBySlug } from "@/services/styles";
+import { createClient } from "@/lib/supabase/server";
+import { deductCredit } from "@/lib/credits";
 import {
   runImageToImage,
   runTextToImage,
@@ -22,9 +28,48 @@ export async function POST(request: NextRequest) {
   const reqStart = Date.now();
 
   try {
+    // ── Auth & Credit Check ─────────────────────────────────────
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: "You must be logged in to generate images." },
+        { status: 401 }
+      );
+    }
+
+    // Check credits
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("credits")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      console.error("[api/generate] profile fetch error:", profileError);
+      return NextResponse.json(
+        { success: false, error: "Could not verify credits. Please try again." },
+        { status: 500 }
+      );
+    }
+
+    if (profile.credits <= 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "No credits remaining. Please purchase more credits to continue.",
+          code: "NO_CREDITS",
+        },
+        { status: 403 }
+      );
+    }
+
+    // ── Parse FormData ──────────────────────────────────────────
     const formData = await request.formData();
 
-    // ── Determine generation mode ─────────────────────────────
     const file = formData.get("image") as File | null;
     const styleSlug = formData.get("styleSlug") as string | null;
     const prompt = formData.get("prompt") as string | null;
@@ -73,10 +118,17 @@ export async function POST(request: NextRequest) {
         size: buffer.length,
         type: file.type,
         waitMode,
+        creditsRemaining: profile.credits,
       });
 
       // Start the model run
       const run = await runImageToImage(buffer, style.hiddenPrompt, file.type, style.referenceImageUrl ?? undefined);
+
+      // ── Deduct 1 credit after successful task start ──────────
+      const deducted = await deductCredit(user.id);
+      if (!deducted) {
+        console.warn("[api/generate] credit deduction failed after task start", { userId: user.id });
+      }
 
       // Async mode: return taskId for client-side polling
       if (waitMode === "async") {
@@ -84,6 +136,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           success: true,
           taskId: run.taskid,
+          creditsRemaining: profile.credits - 1,
         });
       }
 
@@ -100,6 +153,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         imageUrl: task.outputs[0].url,
+        creditsRemaining: profile.credits - 1,
       });
     }
 
@@ -109,9 +163,16 @@ export async function POST(request: NextRequest) {
       aspectRatio,
       resolution,
       waitMode,
+      creditsRemaining: profile.credits,
     });
 
     const run = await runTextToImage(prompt!, aspectRatio, resolution);
+
+    // ── Deduct 1 credit after successful task start ──────────
+    const deducted = await deductCredit(user.id);
+    if (!deducted) {
+      console.warn("[api/generate] credit deduction failed after task start", { userId: user.id });
+    }
 
     // Async mode
     if (waitMode === "async") {
@@ -119,6 +180,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         taskId: run.taskid,
+        creditsRemaining: profile.credits - 1,
       });
     }
 
@@ -135,6 +197,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       imageUrl: task.outputs[0].url,
+      creditsRemaining: profile.credits - 1,
     });
   } catch (error) {
     console.error("[api/generate] error:", error);
