@@ -89,7 +89,7 @@ export default async function CreditsPage() {
                 {pkg.credits} CREDITS
               </div>
               <div className="mt-1 text-xs font-bold text-on-surface-variant opacity-60">
-                ${(pkg.price / pkg.credits / 100).toFixed(2)} per credit
+                ₺{(pkg.price / pkg.credits / 100).toFixed(2)} per credit
               </div>
             </div>
 

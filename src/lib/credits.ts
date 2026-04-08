@@ -24,8 +24,8 @@ export const CREDIT_PACKAGES: CreditPackage[] = [
     id: "starter",
     name: "NOOB PACK",
     credits: 10,
-    price: 499,
-    priceDisplay: "$4.99",
+    price: 14999,
+    priceDisplay: "₺149.99",
     description: "Just dipping your toes into the meme abyss.",
     perks: [
       "10 AI generations",
@@ -37,8 +37,8 @@ export const CREDIT_PACKAGES: CreditPackage[] = [
     id: "pro",
     name: "DANK LORD",
     credits: 50,
-    price: 1499,
-    priceDisplay: "$14.99",
+    price: 44999,
+    priceDisplay: "₺449.99",
     popular: true,
     description: "The chosen one. Peak meme productivity.",
     perks: [
@@ -52,8 +52,8 @@ export const CREDIT_PACKAGES: CreditPackage[] = [
     id: "ultra",
     name: "GIGA CHAD",
     credits: 200,
-    price: 3999,
-    priceDisplay: "$39.99",
+    price: 119999,
+    priceDisplay: "₺1199.99",
     description: "Unlimited power? Almost. 200 credits of raw chaos.",
     perks: [
       "200 AI generations",

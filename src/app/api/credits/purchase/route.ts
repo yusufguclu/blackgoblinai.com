@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { addCredits, CREDIT_PACKAGES } from "@/lib/credits";
+import { CREDIT_PACKAGES } from "@/lib/credits";
+import { buildShopierForm } from "@/services/shopier";
 
 /**
  * POST /api/credits/purchase
  *
- * Mock purchase endpoint — in production, replace with real payment provider
- * (Stripe, Lemonsqueezy, etc.) and verify payment before adding credits.
+ * Creates a pending order in the database, then returns the
+ * Shopier payment form data (action URL + hidden fields) for
+ * the client to auto-submit.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -34,21 +36,55 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // TODO: Integrate real payment provider here
-    // For now, add credits directly (mock purchase)
-    const ok = await addCredits(user.id, pkg.credits);
+    // Amount in TRY (e.g. 14999 kuruş → "149.99" TRY)
+    const amountTRY = (pkg.price / 100).toFixed(2);
 
-    if (!ok) {
+    // Create a pending order in the database
+    const { data: orderIdData, error: orderError } = await supabase.rpc(
+      "create_order",
+      {
+        p_user_id: user.id,
+        p_package_id: pkg.id,
+        p_credits: pkg.credits,
+        p_amount: parseFloat(amountTRY),
+        p_currency: "TRY",
+      }
+    );
+
+    if (orderError || !orderIdData) {
+      console.error("[purchase] order creation failed:", orderError);
       return NextResponse.json(
-        { success: false, error: "Failed to add credits" },
+        { success: false, error: "Failed to create order" },
         { status: 500 }
       );
     }
 
+    const orderId = orderIdData as string;
+
+    // Get user details for Shopier form
+    const displayName =
+      user.user_metadata?.username || user.email?.split("@")[0] || "User";
+    const email = user.email || "user@example.com";
+
+    // Build Shopier payment form
+    const formData = buildShopierForm({
+      orderId,
+      amount: amountTRY,
+      currency: "TRY",
+      productName: `${pkg.name} - ${pkg.credits} Credits`,
+      buyerName: displayName,
+      buyerSurname: "",
+      buyerEmail: email,
+      buyerPhone: "05000000000",
+      buyerAddress: "Digital Product",
+      buyerCity: "Istanbul",
+      buyerCountry: "TR",
+    });
+
     return NextResponse.json({
       success: true,
-      credits: pkg.credits,
-      message: `Added ${pkg.credits} credits to your account`,
+      orderId,
+      shopierForm: formData,
     });
   } catch (error) {
     console.error("Purchase error:", error);

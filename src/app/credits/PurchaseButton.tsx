@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useRef } from "react";
 import Link from "next/link";
 
 interface PurchaseButtonProps {
@@ -11,15 +10,20 @@ interface PurchaseButtonProps {
   isLoggedIn: boolean;
 }
 
+interface ShopierFormData {
+  actionUrl: string;
+  fields: Record<string, string>;
+}
+
 export default function PurchaseButton({
   packageId,
   packageName,
   credits,
   isLoggedIn,
 }: PurchaseButtonProps) {
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const [shopierForm, setShopierForm] = useState<ShopierFormData | null>(null);
 
   if (!isLoggedIn) {
     return (
@@ -43,54 +47,57 @@ export default function PurchaseButton({
 
       const data = await res.json();
 
-      if (data.success) {
-        setSuccess(true);
+      if (data.success && data.shopierForm) {
+        // Set form data and submit to Shopier
+        setShopierForm(data.shopierForm);
+        // Wait for state to update, then submit the form
         setTimeout(() => {
-          router.refresh();
-          setSuccess(false);
-        }, 2000);
+          formRef.current?.submit();
+        }, 100);
       } else {
         alert(data.error || "Purchase failed. Try again.");
+        setLoading(false);
       }
     } catch {
       alert("Something went wrong. Try again.");
-    } finally {
       setLoading(false);
     }
   };
 
-  if (success) {
-    return (
-      <button
-        disabled
-        className="w-full bg-tertiary text-white font-headline font-black text-xl py-4 border-4 border-black brutal-shadow-sm uppercase italic cursor-default flex items-center justify-center gap-2"
-      >
-        <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>
-          check_circle
-        </span>
-        +{credits} ADDED!
-      </button>
-    );
-  }
-
   return (
-    <button
-      onClick={handlePurchase}
-      disabled={loading}
-      className={`w-full font-headline font-black text-xl py-4 border-4 border-black brutal-shadow hover:scale-105 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all uppercase italic cursor-pointer ${
-        loading
-          ? "bg-surface-container-high text-on-surface-variant opacity-60 cursor-wait"
-          : "bg-[#FFFF00] text-black hover:bg-[#e6e600]"
-      }`}
-    >
-      {loading ? (
-        <span className="flex items-center justify-center gap-2">
-          <span className="material-symbols-outlined animate-spin">progress_activity</span>
-          PROCESSING...
-        </span>
-      ) : (
-        `BUY ${packageName}`
+    <>
+      <button
+        onClick={handlePurchase}
+        disabled={loading}
+        className={`w-full font-headline font-black text-xl py-4 border-4 border-black brutal-shadow hover:scale-105 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all uppercase italic cursor-pointer ${
+          loading
+            ? "bg-surface-container-high text-on-surface-variant opacity-60 cursor-wait"
+            : "bg-[#FFFF00] text-black hover:bg-[#e6e600]"
+        }`}
+      >
+        {loading ? (
+          <span className="flex items-center justify-center gap-2">
+            <span className="material-symbols-outlined animate-spin">progress_activity</span>
+            REDIRECTING TO PAYMENT...
+          </span>
+        ) : (
+          `BUY ${packageName}`
+        )}
+      </button>
+
+      {/* Hidden Shopier Payment Form */}
+      {shopierForm && (
+        <form
+          ref={formRef}
+          method="POST"
+          action={shopierForm.actionUrl}
+          style={{ display: "none" }}
+        >
+          {Object.entries(shopierForm.fields).map(([key, value]) => (
+            <input key={key} type="hidden" name={key} value={value} />
+          ))}
+        </form>
       )}
-    </button>
+    </>
   );
 }
