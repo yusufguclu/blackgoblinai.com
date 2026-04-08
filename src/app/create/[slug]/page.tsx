@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
 import ImageUpload from "@/components/ImageUpload";
-import type { ApiGenerateResponse } from "@/types";
+import type { ApiGenerateResponse, ApiStatusResponse } from "@/types";
 
 const filterData: Record<string, {name: string, image: string}> = {
   "bust-down": {
@@ -17,8 +17,25 @@ const filterData: Record<string, {name: string, image: string}> = {
   "face-swap": {
     name: "JD Vance Face Swap",
     image: "https://lh3.googleusercontent.com/aida-public/AB6AXuBw8QtVF4NC11XiPVZNCxu328N1xygUL2mmqRKfTnW-ivaAXcTsOAGhd62R_EunvgYMEiiRq-3ZCQqkTuQcwja5PH_zNJlfa84AujdLPuBktS3k4WhKA1HNwkQtsJjkbNuCJGiQhi2186jmcXIpkqkFbcK-WCO6dlnQxUc1FG4sPVA_5oLo_Rdzk7mjXvVUQLGeLs4ym1N7GEcqyim-03zQU0dXlSzHd4oqfc3_M1WUUx4yVkt5AArIb4dlY8jOl7U3484PFdYT1Yvj",
-  }
+  },
+  "anime-character": {
+    name: "Anime Character",
+    image: "https://lh3.googleusercontent.com/aida-public/AB6AXuBaA4Vl9AfG-6CDZdjKvHgGJAJcNyVvaSYhJo9dWop2gFJffBHaILFzNLujCMpj9593EHUPZi1-c_BeKmFYcRCGZHrJo7SdSJrbWJ7CRQellx7dS0LKjJSv1L7obW6tGujvBFkDMvMZH9moKO_xP6m9lhUSyqhg-nK6ymBExSCf88Vs-BNXG7PgDTenfcrqV_L7Qm0oZYp7kTDSx8lftlydf5WMHt_5eDCVkIi5dDW4F3NhdHwr5czXuL90SAoWM4oQrt_Q5mL25yON",
+  },
 };
+
+const PROGRESS_MESSAGES = [
+  "Starting AI model...",
+  "Uploading image to GPU cluster...",
+  "Model is processing your image...",
+  "Neural networks doing their thing...",
+  "Still cooking... this model is thorough...",
+  "Almost there, finalizing output...",
+  "Downloading result from the cloud...",
+];
+
+const POLL_INTERVAL = 3000;
+const MAX_POLL_TIME = 180_000; // 3 minutes
 
 export default function CreateSlugPage() {
   const router = useRouter();
@@ -32,6 +49,30 @@ export default function CreateSlugPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [progressMessage, setProgressMessage] = useState("");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const abortRef = useRef(false);
+
+  // Clean up intervals on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
+  // Cycle through progress messages
+  useEffect(() => {
+    if (!isGenerating) return;
+    const idx = Math.min(
+      Math.floor(elapsedSeconds / 8),
+      PROGRESS_MESSAGES.length - 1
+    );
+    setProgressMessage(PROGRESS_MESSAGES[idx]);
+  }, [isGenerating, elapsedSeconds]);
 
   const handleFileSelect = useCallback((file: File | null) => {
     if (!file) {
@@ -49,6 +90,17 @@ export default function CreateSlugPage() {
     });
   }, []);
 
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
   const handleGenerate = async () => {
     if (!selectedFile) {
       setUploadError("Please upload an image first.");
@@ -57,11 +109,22 @@ export default function CreateSlugPage() {
 
     setIsGenerating(true);
     setGenerateError(null);
+    setElapsedSeconds(0);
+    setProgressMessage(PROGRESS_MESSAGES[0]);
+    abortRef.current = false;
+
+    // Start elapsed timer
+    const startTime = Date.now();
+    timerRef.current = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startTime) / 1000));
+    }, 1000);
 
     try {
+      // Step 1: Submit generation request (async mode — returns taskId)
       const formData = new FormData();
       formData.append("image", selectedFile);
       formData.append("styleSlug", slug);
+      formData.append("mode", "async");
 
       const response = await fetch("/api/generate", {
         method: "POST",
@@ -70,21 +133,85 @@ export default function CreateSlugPage() {
 
       const data: ApiGenerateResponse = await response.json();
 
-      if (!data.success || !data.imageBase64) {
-        setGenerateError(data.error ?? "Generation failed. Please try again.");
+      if (!data.success || !data.taskId) {
+        setGenerateError(data.error ?? "Failed to start generation.");
         setIsGenerating(false);
+        stopPolling();
         return;
       }
 
-      sessionStorage.setItem("generationResult", data.imageBase64);
+      // Step 2: Poll for status
+      const taskId = data.taskId;
+      setProgressMessage("Model run started, polling for results...");
 
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      const pollForResult = () => {
+        pollRef.current = setInterval(async () => {
+          if (abortRef.current) {
+            stopPolling();
+            return;
+          }
 
-      router.push("/result");
+          // Timeout check
+          if (Date.now() - startTime > MAX_POLL_TIME) {
+            stopPolling();
+            setGenerateError("Generation timed out. Please try again.");
+            setIsGenerating(false);
+            return;
+          }
+
+          try {
+            const statusRes = await fetch("/api/generate/status", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ taskId }),
+            });
+
+            const status: ApiStatusResponse = await statusRes.json();
+
+            if (status.completed) {
+              stopPolling();
+
+              if (status.imageUrl) {
+                // Redirect with URL passed as query parameter
+                if (previewUrl) URL.revokeObjectURL(previewUrl);
+                router.push(`/result?url=${encodeURIComponent(status.imageUrl)}`);
+              } else {
+                setGenerateError(status.error ?? "Generation completed but no image was returned.");
+                setIsGenerating(false);
+              }
+            }
+          } catch {
+            // Network error during poll — don't stop, just retry on next tick
+            console.warn("[poll] Network error, will retry...");
+          }
+        }, POLL_INTERVAL);
+      };
+
+      pollForResult();
     } catch {
       setGenerateError("Something went wrong. Please try again.");
       setIsGenerating(false);
+      stopPolling();
     }
+  };
+
+  const handleCancel = () => {
+    abortRef.current = true;
+    stopPolling();
+    setIsGenerating(false);
+    setProgressMessage("");
+    setElapsedSeconds(0);
+  };
+
+  const handleRetry = () => {
+    setGenerateError(null);
+    handleGenerate();
+  };
+
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
   };
 
   return (
@@ -122,11 +249,18 @@ export default function CreateSlugPage() {
               </div>
             </div>
 
-            {/* Center: Arrow */}
+            {/* Center: Arrow + Progress */}
             <div className="flex flex-col items-center justify-center shrink-0">
               <span className="material-symbols-outlined text-4xl md:text-6xl text-primary font-black scale-y-150 rotate-90 md:rotate-0 my-4 md:my-0">double_arrow</span>
               {isGenerating && (
-                <span className="font-headline font-black text-xs text-secondary animate-pulse uppercase mt-2">Processing...</span>
+                <div className="flex flex-col items-center mt-2 space-y-1">
+                  <span className="font-headline font-black text-xs text-secondary animate-pulse uppercase">
+                    {progressMessage}
+                  </span>
+                  <span className="font-label text-[10px] font-bold text-on-surface opacity-70">
+                    Elapsed: {formatTime(elapsedSeconds)}
+                  </span>
+                </div>
               )}
             </div>
 
@@ -151,17 +285,36 @@ export default function CreateSlugPage() {
             </div>
             
             {generateError && (
-              <div className="bg-error text-white font-bold px-4 py-2 border-2 border-black uppercase text-sm">
-                Error: {generateError}
+              <div className="bg-error text-white font-bold px-4 py-2 border-2 border-black uppercase text-sm flex flex-col sm:flex-row items-center gap-3 w-full justify-center">
+                <span>Error: {generateError}</span>
+                <button
+                  onClick={handleRetry}
+                  className="bg-white text-error font-black text-xs px-4 py-1 border-2 border-black hover:bg-[#FFFF00] hover:text-black transition-colors uppercase shrink-0"
+                >
+                  RETRY
+                </button>
               </div>
             )}
 
-            <button 
+            <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+              <button 
                 onClick={handleGenerate}
                 disabled={!selectedFile || isGenerating}
-                className="w-full md:w-auto bg-primary text-white font-headline font-black text-xl md:text-3xl px-6 py-4 md:px-12 md:py-6 border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] md:shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] hover:bg-[#FFFF00] hover:text-black hover:-translate-x-1 hover:-translate-y-1 md:hover:shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] transition-all active:translate-x-1 active:translate-y-1 active:shadow-none uppercase italic tracking-tighter disabled:opacity-50 disabled:grayscale disabled:cursor-not-allowed">
-              {isGenerating ? "PROCESSING..." : `RUN ${currentFilter.name.toUpperCase()}`}
-            </button>
+                className="flex-1 md:flex-none bg-primary text-white font-headline font-black text-xl md:text-3xl px-6 py-4 md:px-12 md:py-6 border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] md:shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] hover:bg-[#FFFF00] hover:text-black hover:-translate-x-1 hover:-translate-y-1 md:hover:shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] transition-all active:translate-x-1 active:translate-y-1 active:shadow-none uppercase italic tracking-tighter disabled:opacity-50 disabled:grayscale disabled:cursor-not-allowed"
+              >
+                {isGenerating ? "GENERATING..." : `RUN ${currentFilter.name.toUpperCase()}`}
+              </button>
+
+              {isGenerating && (
+                <button
+                  onClick={handleCancel}
+                  className="bg-secondary text-white font-headline font-black text-lg px-6 py-4 border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-error transition-colors uppercase italic tracking-tighter"
+                >
+                  CANCEL
+                </button>
+              )}
+            </div>
+
             <div className="flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-4 sm:space-x-0">
               <div className="flex items-center space-x-1">
                 <div className={`w-3 h-3 bg-tertiary border border-black ${isGenerating ? "animate-pulse" : ""}`}></div>
@@ -173,6 +326,14 @@ export default function CreateSlugPage() {
                    GPU Load: {isGenerating ? "99%" : "12%"}
                 </span>
               </div>
+              {isGenerating && (
+                <div className="flex items-center space-x-1">
+                  <div className="w-3 h-3 bg-primary border border-black animate-ping"></div>
+                  <span className="text-[10px] font-bold font-label uppercase text-primary">
+                    TASK RUNNING
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -180,7 +341,12 @@ export default function CreateSlugPage() {
         {/* Status Bar */}
         <div className="bg-surface-container-highest border-t-2 border-black p-1 flex justify-between text-[8px] md:text-[10px] font-bold font-label px-2 md:px-4 uppercase">
           <span>Object(s) Selected: {selectedFile ? "1" : "0"}</span>
-          <span>Memelord AI v4.2.0 - {isGenerating ? "Working..." : "Ready"}</span>
+          <span>
+            {isGenerating
+              ? `Processing... ${formatTime(elapsedSeconds)}`
+              : "Ready"}
+          </span>
+          <span>Memelord AI v4.2.0</span>
         </div>
       </div>
 

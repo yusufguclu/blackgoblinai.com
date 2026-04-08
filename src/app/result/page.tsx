@@ -6,47 +6,53 @@ import ResultDisplay from "@/components/ResultDisplay";
 
 export default function ResultPage() {
   const router = useRouter();
-  const [imageBase64, setImageBase64] = useState<string | null>(null);
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Read result from sessionStorage — temporary, tab-scoped
-    const result = sessionStorage.getItem("generationResult");
+    // Read the url parameter from window.location directly
+    // This avoids Next.js useSearchParams Suspense boundary requirements.
+    const searchParams = new URLSearchParams(window.location.search);
+    const urlParam = searchParams.get("url");
 
-    if (!result) {
-      // No result available — redirect to create page
-      router.replace("/create");
+    if (!urlParam) {
+      // Check legacy session storage just in case (optional, but let's just redirect)
+      router.replace("/");
       return;
     }
 
-    setImageBase64(result);
+    // Proxy the image URL through our backend to avoid CORS and load issues
+    setImageSrc(`/api/image-proxy?url=${encodeURIComponent(urlParam)}`);
     setIsLoading(false);
-
-    // Clean up sessionStorage after reading
-    // Result stays in component state for this page visit
-    sessionStorage.removeItem("generationResult");
   }, [router]);
 
   if (isLoading) {
     return (
       <main className="flex min-h-[calc(100vh-4rem)] items-center justify-center pt-16">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/10 border-t-violet-500" />
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-black border-t-primary animate-spin" />
+          <span className="font-headline font-black uppercase text-sm animate-pulse">
+            LOADING CHAOS...
+          </span>
+        </div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-[calc(100vh-4rem)] pt-16">
-      <div className="mx-auto max-w-2xl px-6 py-12">
+    <main className="min-h-[calc(100vh-4rem)] pt-24 pb-12">
+      <div className="mx-auto max-w-2xl px-6">
         {/* Page header */}
         <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold text-white">Your Anime Portrait</h1>
-          <p className="mt-2 text-white/50">
+          <h1 className="font-headline font-black text-4xl text-primary uppercase italic drop-shadow-[3px_3px_0px_rgba(0,0,0,1)] meme-stroke tracking-tighter">
+            YOUR CREATION
+          </h1>
+          <p className="mt-2 font-label font-bold text-sm uppercase text-on-surface">
             Here&apos;s your AI-generated transformation
           </p>
         </div>
 
-        {imageBase64 && <ResultDisplay imageBase64={imageBase64} />}
+        {imageSrc && <ResultDisplay imageSrc={imageSrc} />}
       </div>
     </main>
   );

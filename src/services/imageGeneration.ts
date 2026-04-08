@@ -1,27 +1,22 @@
 /**
  * Image Generation Service
  *
- * Abstraction layer for AI image generation. Uses a provider interface
- * so the underlying AI service can be swapped without touching business logic.
+ * Provider-based abstraction for AI image generation.
  *
- * Currently uses a MockProvider that returns a simple processed version
- * of the uploaded image. Replace with a real provider (e.g., Replicate,
- * Stability AI, OpenAI DALL-E) when ready.
+ * Providers:
+ *   WiroProvider  — Wiro AI (google/nano-banana-pro), image-to-image
+ *   MockProvider  — Returns original image as-is (dev/fallback)
+ *
+ * Set IMAGE_PROVIDER=mock in .env.local to use MockProvider.
  */
 
 import type { GenerationResult } from "@/types";
 import { getStyleBySlug } from "./styles";
+import { runImageToImage, runTextToImage, pollTask } from "./wiro";
 
 // ── Provider Interface ───────────────────────────────────────
 
 export interface ImageGenerationProvider {
-  /**
-   * Generate a transformed image from the source image using the given prompt.
-   * @param imageBuffer - The raw image bytes
-   * @param prompt - The hidden prompt/template for this style
-   * @param mimeType - MIME type of the source image
-   * @returns GenerationResult with base64-encoded output image
-   */
   generate(
     imageBuffer: Buffer,
     prompt: string,
@@ -29,62 +24,67 @@ export interface ImageGenerationProvider {
   ): Promise<GenerationResult>;
 }
 
+// ── Wiro Provider ────────────────────────────────────────────
+
+class WiroProvider implements ImageGenerationProvider {
+  async generate(
+    imageBuffer: Buffer,
+    prompt: string,
+    mimeType: string
+  ): Promise<GenerationResult> {
+    try {
+      // 1. Start model run (image-to-image)
+      const run = await runImageToImage(imageBuffer, prompt, mimeType);
+
+      // 2. Poll until done
+      const task = await pollTask(run.taskid);
+
+      // 3. Extract output
+      if (!task.outputs?.length) {
+        return { success: false, error: "No output images returned." };
+      }
+
+      return {
+        success: true,
+        imageUrl: task.outputs[0].url,
+        mimeType: task.outputs[0].contenttype || "image/png",
+      };
+    } catch (err) {
+      console.error("[WiroProvider] generation failed:", err);
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : "Image generation failed.",
+      };
+    }
+  }
+}
+
 // ── Mock Provider ────────────────────────────────────────────
 
-/**
- * MockProvider — Returns the uploaded image as-is (base64 encoded).
- * In a real implementation, this would call an external AI API.
- *
- * To replace with a real provider:
- * 1. Create a new class implementing ImageGenerationProvider
- * 2. Call the AI API in the generate() method
- * 3. Swap `activeProvider` below
- *
- * Example with Replicate:
- * ```
- * class ReplicateProvider implements ImageGenerationProvider {
- *   async generate(imageBuffer: Buffer, prompt: string, mimeType: string) {
- *     const prediction = await replicate.run("model-id", {
- *       input: { image: imageBuffer.toString("base64"), prompt }
- *     });
- *     return { success: true, imageBase64: prediction.output, mimeType: "image/png" };
- *   }
- * }
- * ```
- */
 class MockProvider implements ImageGenerationProvider {
   async generate(
     imageBuffer: Buffer,
     _prompt: string,
     mimeType: string
   ): Promise<GenerationResult> {
-    // Simulate processing delay (1-2 seconds)
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-
-    // In mock mode, return the original image as base64.
-    // A real provider would return the AI-transformed image.
-    const imageBase64 = imageBuffer.toString("base64");
-
+    await new Promise((r) => setTimeout(r, 1500));
     return {
       success: true,
-      imageBase64,
+      imageBase64: imageBuffer.toString("base64"),
       mimeType,
     };
   }
 }
 
 // ── Active Provider ──────────────────────────────────────────
-// Swap this to use a real AI provider:
-// const activeProvider: ImageGenerationProvider = new ReplicateProvider();
-const activeProvider: ImageGenerationProvider = new MockProvider();
 
-// ── Public API ───────────────────────────────────────────────
+const activeProvider: ImageGenerationProvider =
+  process.env.IMAGE_PROVIDER === "mock"
+    ? new MockProvider()
+    : new WiroProvider();
 
-/**
- * Generate a transformed image for the given style.
- * Fetches the hidden prompt from the style config and passes it to the provider.
- * All processing is done in memory — no files are written to disk.
- */
+// ── Public API: Image-to-Image ───────────────────────────────
+
 export async function generateImage(
   styleSlug: string,
   imageBuffer: Buffer,
@@ -93,25 +93,42 @@ export async function generateImage(
   const style = getStyleBySlug(styleSlug);
 
   if (!style) {
-    return {
-      success: false,
-      error: `Style "${styleSlug}" not found or is inactive.`,
-    };
+    return { success: false, error: `Style "${styleSlug}" not found.` };
   }
 
   try {
-    // The hidden prompt is fetched server-side and never sent to the client
-    const result = await activeProvider.generate(
-      imageBuffer,
-      style.hiddenPrompt,
-      mimeType
-    );
-    return result;
-  } catch (error) {
-    console.error("Image generation failed:", error);
+    return await activeProvider.generate(imageBuffer, style.hiddenPrompt, mimeType);
+  } catch (err) {
+    console.error("[generateImage] failed:", err);
+    return { success: false, error: "Image generation failed. Please try again." };
+  }
+}
+
+// ── Public API: Text-to-Image ────────────────────────────────
+
+export async function generateTextToImage(
+  prompt: string,
+  aspectRatio = "1:1",
+  resolution = "1024x1024"
+): Promise<GenerationResult> {
+  try {
+    const run = await runTextToImage(prompt, aspectRatio, resolution);
+    const task = await pollTask(run.taskid);
+
+    if (!task.outputs?.length) {
+      return { success: false, error: "No output images returned." };
+    }
+
+    return {
+      success: true,
+      imageUrl: task.outputs[0].url,
+      mimeType: task.outputs[0].contenttype || "image/png",
+    };
+  } catch (err) {
+    console.error("[generateTextToImage] failed:", err);
     return {
       success: false,
-      error: "Image generation failed. Please try again.",
+      error: err instanceof Error ? err.message : "Text-to-image generation failed.",
     };
   }
 }
